@@ -205,6 +205,9 @@ DEFAULT_HCA_VARIANTS = [
     "mig_s8_fillsram_p4_c16",  "mig_s8_fillsram_p4_c32",  "mig_s8_fillsram_p4_c64",
     "mig_s8_fillsram_p8_c16",  "mig_s8_fillsram_p8_c32",  "mig_s8_fillsram_p8_c64",
     "mig_s8_fillsram_p16_c16", "mig_s8_fillsram_p16_c32", "mig_s8_fillsram_p16_c64",
+    # Canonical HCA: no set-parity, full associativity preserved
+    "noparity_s8_fillmram", "noparity_s8_fillsram",
+    "noparity_s8_fillmram_p4_c32",
 ]
 
 def plan_hca(args: argparse.Namespace, site: Dict[str, Any]) -> Path:
@@ -274,16 +277,22 @@ def get_params(params: Dict[str, Any], uarch: str) -> Tuple[float, float]:
     return float(power.get("p_static_w")), float(power.get("k_dyn_w_per_ghz_util"))
 
 
-def get_cap(params: Dict[str, Any], uarch: str, mode: str, l3_mb: int) -> float:
+def get_cap(params: Dict[str, Any], uarch: str, mode: str, l3_mb: int, cores: int | None = None) -> float:
     ua = (params.get("uarch") or {}).get(uarch) or {}
     cap_w = ua.get("cap_w") or {}
     mode_map = cap_w.get(mode) or {}
+
+    # Support cap_w.multicore.n4/n8/... schema
+    if mode == "multicore" and cores is not None and isinstance(mode_map, dict):
+        nkey = f"n{int(cores)}"
+        if nkey in mode_map and isinstance(mode_map[nkey], dict):
+            mode_map = mode_map[nkey]
+
     if str(l3_mb) in mode_map:
         return float(mode_map[str(l3_mb)])
     if l3_mb in mode_map:
         return float(mode_map[l3_mb])
-    raise KeyError(f"Missing cap_w for uarch={uarch} mode={mode} l3_mb={l3_mb}")
-
+    raise KeyError(f"Missing cap_w for uarch={uarch} mode={mode} cores={cores} l3_mb={l3_mb}")
 
 def run_label(roi_m: int, warmup_m: int) -> str:
     return f"roi{roi_m}M_warm{warmup_m}M" if warmup_m > 0 else f"roi{roi_m}M"
@@ -313,7 +322,8 @@ LC_LABEL_RE = re.compile(r"^(naive_|sram_)?lc_c[0-9p]+_s[0-9p]+_d[0-9p]+_tf[0-9p
 
 HCA_LABEL_RE = re.compile(
     r"^(baseline_sram_only|baseline_mram_only|baseline_\d+_sram|"
-    r"grid_s\d+_fill(?:sram|mram)|mig_s\d+_fill(?:sram|mram)_p\d+_c\d+)$"
+    r"grid_s\d+_fill(?:sram|mram)|mig_s\d+_fill(?:sram|mram)_p\d+_c\d+|"
+    r"noparity_s\d+_fill(?:sram|mram)|noparity_s\d+_fill(?:sram|mram)_p\d+_c\d+)$"
 )
 
 def build_variants(variant_set: str, base_label: str, include_baselines: bool = True) -> List[str]:
@@ -368,7 +378,8 @@ def plan_spec(args: argparse.Namespace, site: Dict[str, Any], params: Dict[str, 
     jobs: List[str] = []
     for bench in benches:
         for l3 in l3_list:
-            cap = get_cap(params, args.uarch, "single", l3)
+            mode = "single" if int(args.cores) <= 1 else "multicore"
+            cap = get_cap(params, args.uarch, mode, l3, cores=args.cores)
             lc_label = leakdvfs_variant_label(
                 cap_w=cap,
                 static_w=p_static if args.static_w is None else float(args.static_w),
@@ -379,7 +390,10 @@ def plan_spec(args: argparse.Namespace, site: Dict[str, Any], params: Dict[str, 
                 step_ghz=float(args.step_ghz),
                 periodic_ins=int(args.ldvfs_periodic_ins),
             )
-            variants = build_variants(args.variant_set, lc_label, include_baselines=True)
+            if args.variants:
+                variants = [v.strip() for v in args.variants.split(",") if v.strip()]
+            else:
+                variants = build_variants(args.variant_set, lc_label, include_baselines=True)
 
             for var in variants:
                 outdir = outdir_spec(runs_root, bench, args.roi_m, args.warmup_m, l3, var, args.tech)
@@ -435,7 +449,7 @@ def plan_traces(args: argparse.Namespace, site: Dict[str, Any], params: Dict[str
     jobs: List[str] = []
     for w in workloads:
         for l3 in l3_list:
-            cap = get_cap(params, args.uarch, "multicore", l3)
+            cap = get_cap(params, args.uarch, "multicore", l3, cores=args.cores)
             lc_label = leakdvfs_variant_label(
                 cap_w=cap,
                 static_w=p_static if args.static_w is None else float(args.static_w),
@@ -446,7 +460,10 @@ def plan_traces(args: argparse.Namespace, site: Dict[str, Any], params: Dict[str
                 step_ghz=float(args.step_ghz),
                 periodic_ins=int(args.ldvfs_periodic_ins),
             )
-            variants = build_variants(args.variant_set, lc_label, include_baselines=True)
+            if args.variants:
+                variants = [v.strip() for v in args.variants.split(",") if v.strip()]
+            else:
+                variants = build_variants(args.variant_set, lc_label, include_baselines=True)
 
             for var in variants:
                 outdir = outdir_traces(runs_root, w, args.cores, l3, var, args.tech)
@@ -513,7 +530,10 @@ def plan_microbench(args: argparse.Namespace, site: Dict[str, Any], params: Dict
             step_ghz=float(args.step_ghz),
             periodic_ins=int(args.ldvfs_periodic_ins),
         )
-        variants = build_variants(args.variant_set, lc_label, include_baselines=True)
+        if args.variants:
+            variants = [v.strip() for v in args.variants.split(",") if v.strip()]
+        else:
+            variants = build_variants(args.variant_set, lc_label, include_baselines=True)
 
         for var in variants:
             for mb in microbenches:
@@ -641,7 +661,10 @@ def plan_kernel(args: argparse.Namespace, site: Dict[str, Any], params: Dict[str
             step_ghz=float(args.step_ghz),
             periodic_ins=int(args.ldvfs_periodic_ins),
         )
-        variants = build_variants(args.variant_set, lc_label, include_baselines=True)
+        if args.variants:
+            variants = [v.strip() for v in args.variants.split(",") if v.strip()]
+        else:
+            variants = build_variants(args.variant_set, lc_label, include_baselines=True)
 
         for var in variants:
             for n in sizes:
@@ -708,7 +731,7 @@ def validate_run(run_dir: Path) -> None:
         raise SystemExit("[ERR] SNIPER_HOME/run-sniper missing; fix mx2/config/site.yaml")
 
     # Engine scripts
-    for s in ("run_spec.sh", "run_traces.sh", "run_microbench.sh", "run_kernel.sh", "flags_common.sh"):
+    for s in ("run_spec.sh", "run_traces.sh", "run_microbench.sh", "run_kernel.sh", "flags_common.sh", "run_hca.sh", "hca_flags_common.sh"):
         if not (MX2_ROOT / "engine" / s).exists():
             raise SystemExit(f"[ERR] missing mx2/engine/{s}")
 
@@ -724,37 +747,40 @@ def validate_run(run_dir: Path) -> None:
         if outdir in seen_outdirs:
             raise SystemExit(f"[ERR] duplicate OUTDIR: {outdir}")
         seen_outdirs.add(outdir)
-        if var not in ("baseline_sram_only", "baseline_mram_only") and not LC_LABEL_RE.match(var):
-            raise SystemExit(f"[ERR] job {i} invalid VARIANT label: {var}")
-
-        # Campaign-specific requirements (from env.sh)
+        # Variant label validation: HCA uses its own label format
         if camp == "hca":
             if not HCA_LABEL_RE.match(var):
                 raise SystemExit(f"[ERR] job {i} invalid HCA VARIANT: {var}")
+        elif var not in ("baseline_sram_only", "baseline_mram_only") \
+                and not var.startswith("static_lift_") \
+                and not LC_LABEL_RE.match(var):
+            raise SystemExit(f"[ERR] job {i} invalid VARIANT label: {var}")
+
+        # Campaign-specific requirements (from env.sh)
+        if camp in ("hca", "spec"):
+            spec_root = env.get("SPEC_ROOT", "")
+            if not spec_root or not (Path(spec_root) / "shrc").exists():
+                raise SystemExit("[ERR] SPEC_ROOT/shrc missing; fix mx2/config/site.yaml")
+        elif camp == "traces":
+            trace_root = env.get("TRACE_ROOT", "")
+            if not trace_root or not Path(trace_root).exists():
+                raise SystemExit("[ERR] TRACE_ROOT missing; fix mx2/config/site.yaml")
+        elif camp == "microbench":
+            mb = env.get("MICROBENCH_BIN", "")
+            if not mb or not Path(mb).exists():
+                raise SystemExit("[ERR] MICROBENCH_BIN missing; fix mx2/config/site.yaml")
+        elif camp == "kernel":
+            blis = env.get("BLIS_BIN", "")
+            if not blis or not Path(blis).exists():
+                raise SystemExit("[ERR] BLIS_BIN missing; fix mx2/config/site.yaml")
         else:
-            if camp == "spec":
-                spec_root = env.get("SPEC_ROOT", "")
-                if not spec_root or not (Path(spec_root) / "shrc").exists():
-                    raise SystemExit("[ERR] SPEC_ROOT/shrc missing; fix mx2/config/site.yaml")
-            elif camp == "traces":
-                trace_root = env.get("TRACE_ROOT", "")
-                if not trace_root or not Path(trace_root).exists():
-                    raise SystemExit("[ERR] TRACE_ROOT missing; fix mx2/config/site.yaml")
-            elif camp == "microbench":
-                mb = env.get("MICROBENCH_BIN", "")
-                if not mb or not Path(mb).exists():
-                    raise SystemExit("[ERR] MICROBENCH_BIN missing; fix mx2/config/site.yaml")
-            elif camp == "kernel":
-                blis = env.get("BLIS_BIN", "")
-                if not blis or not Path(blis).exists():
-                    raise SystemExit("[ERR] BLIS_BIN missing; fix mx2/config/site.yaml")
-            else:
-                raise SystemExit(f"[ERR] unknown CAMPAIGN={camp} in job {i}")
+            raise SystemExit(f"[ERR] unknown CAMPAIGN={camp} in job {i}")
 
     print(f"[OK] validate: jobs={len(jobs)} unique_outdirs={len(seen_outdirs)}")
 
 
-def submit_run(run_dir: Path, dry_run: bool, extra_sbatch: List[str]) -> None:
+def submit_run(run_dir: Path, dry_run: bool, extra_sbatch: List[str],
+               max_concurrent: int = 0) -> None:
     run_dir = run_dir.resolve()
     jobs = [ln for ln in (run_dir / "jobs.txt").read_text().splitlines() if ln.strip()]
     n = len(jobs)
@@ -767,11 +793,21 @@ def submit_run(run_dir: Path, dry_run: bool, extra_sbatch: List[str]) -> None:
 
     ensure_dir(run_dir / "slurm")
 
+    # If user provided --array in extra_sbatch, use that instead of auto range
+    user_array = any('--array' in s for s in extra_sbatch)
+    if not user_array:
+        array_spec = f"0-{n-1}"
+        if max_concurrent > 0:
+            array_spec += f"%{max_concurrent}"
+        array_args = ["--array", array_spec]
+    else:
+        array_args = []
+
     cmd = [
         "sbatch",
         "--chdir", str(run_dir),
         "--job-name", "mx2",
-        "--array", f"0-{n-1}",
+        *array_args,
         "--export", f"ALL,RUN_DIR={run_dir}",
         str(sbatch_script),
     ]
@@ -865,6 +901,13 @@ def main() -> None:
         p.add_argument("--allow-sift-assert", action="store_true")
         p.add_argument("--allow-no-mem", action="store_true")
 
+        p.add_argument(
+    "--variants",
+    default="",
+    help="Comma-separated explicit variants to run (overrides --variant-set). "
+         "Example: baseline_sram_only or baseline_sram_only,baseline_mram_only",
+)
+
     ps = sub.add_parser("plan-spec")
     add_common(ps)
     ps.add_argument("--benches", default="")
@@ -924,6 +967,8 @@ def main() -> None:
     ss.add_argument("run_dir")
     ss.add_argument("--dry-run", action="store_true")
     ss.add_argument("--sbatch", action="append", default=[])
+    ss.add_argument("--max-concurrent", type=int, default=0,
+                    help="Max Slurm array tasks running at once (0=unlimited)")
 
     vf = sub.add_parser("verify")
     vf.add_argument("run_dir")
@@ -960,7 +1005,8 @@ def main() -> None:
         return
 
     if args.cmd == "submit":
-        submit_run(Path(args.run_dir), args.dry_run, args.sbatch)
+        submit_run(Path(args.run_dir), args.dry_run, args.sbatch,
+                   max_concurrent=args.max_concurrent)
         return
 
     if args.cmd == "verify":

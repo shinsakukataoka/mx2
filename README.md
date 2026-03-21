@@ -316,6 +316,245 @@ mx2/bin/mx plan-hca --uarch gainestown --tech sram32 --benches 505.mcf_r --l3 32
 
 ---
 
+## VF Sensitivity Study (Discussion section — piecewise-linear power model)
+
+### Background
+
+The main LeakDVFS model uses a linear dynamic power estimator:
+```
+P_est = p_static_w + llc_leak_w + k_dyn * Σ(f_c * u_c)
+```
+
+For the paper's Discussion section we implemented a frequency-indexed piecewise-linear
+model (PLM) that is more realistic without requiring a full V/f hardware characterization:
+```
+P_est     = llc_leak_w + P_nocache_est(f)
+P_nocache = b_f  +  a_util * U_sum  +  a_ipc * U_sum * ipc_interval
+```
+
+One set of coefficients `(b_f, a_util, a_ipc)` per DVFS operating frequency.
+The current DVFS frequency is used as the exact lookup key; nearest fallback if no
+exact entry exists (logged with a warning, once per distinct miss frequency).
+
+### Predictors
+
+| Predictor              | Definition                                                          | Units      |
+|------------------------|---------------------------------------------------------------------|------------|
+| `U_sum`                | Total utilization summed across all cores: `avg_util × N_cores`    | core-units |
+| `U_sum × ipc_interval` | Interaction term: busy-core compute intensity, scales with N        | core-units × IPC |
+
+`U_sum` (not `avg_util`) is used so the model is **portable across core counts**: at the
+same per-core workload intensity, doubling N doubles U_sum and doubles predicted dynamic
+power, matching physical expectation. A model fitted on n=1 or n=8 data can be applied
+to n=4 deployments (subject to portability validation below).
+
+`ipc_interval` is **not** per-core hardware PMU IPC. It is the ratio of total
+instructions retired across all cores to estimated total elapsed cycles (using
+mean core frequency as cycle-rate proxy). Values > 1 are possible with superscalar
+issue > 1.
+
+### Calibration
+
+Coefficients are fitted offline via OLS linear regression at each fixed DVFS frequency.
+The calibration target is McPAT non-cache package power:
+```
+P_nocache_McPAT  =  P_total_McPAT − P_LLC_leak
+                 =  b_f  +  a_util * U_sum  +  a_ipc * U_sum * ipc_interval
+```
+
+All three coefficients `(b_f, a_util, a_ipc)` come from a single consistent regression
+procedure — no literature-derived constants are mixed in.
+
+**Calibration data for sunnycove:**
+
+| Dataset | N | Frequencies | Runs | Source |
+|---------|---|-------------|------|--------|
+| Primary (existing) | 8 | 19 frequencies (2.0–3.6 GHz) | 570 | `results_test/calibration/sunnycove_spec10_l3_sram14_roi1000_warm200_SRAMONLY/spec/` |
+| New (to run) | 1 | 2.0, 2.66, 3.2 GHz | 18 | `plm_calibrate_sweep.sh --mode calib` |
+
+Note: the existing data uses single-threaded SPEC workloads on n=8 cores, so U_sum ≤ 1
+in both datasets. The n=1 calibration jobs add coverage at a different static power
+operating point (1-core P_static vs 8-core), which helps separate b_f from a_util.
+
+The runner ships with **linear-model-equivalent placeholder coefficients** until
+offline calibration is run:
+```
+b_f    = p_static_w          (20.08 W for sunnycove)
+a_util = k_dyn * f_ghz / N  (scales k_dyn to W/U_sum units)
+a_ipc  = 0.0                 (zero until regression is run)
+```
+With these placeholders, the PLM exactly reproduces the original linear model,
+making it straightforward to verify correctness before substituting real coefficients.
+
+#### Step 1 — Run n=1 sunnycove calibration jobs
+
+```bash
+cd ~/COSC_498/miniMXE/mx2
+
+# Generate 18 jobs (6 benches × 3 freqs, n=1, fixed freq, SRAM-only, LC off)
+bash plm_calibrate_sweep.sh --mode calib
+mx submit <N1_RUN_DIR>
+mx verify  <N1_RUN_DIR>
+
+# Extract oracle points
+SNIPER_HOME=~/src/sniper ROOT=<N1_RUN_DIR>/runs \
+    bash tools/extract_oracle_points.sh
+```
+
+#### Step 2 — Fit PLM from combined n=1 + n=8 data
+
+```bash
+python3 tools/mcpat_plm_fit.py \
+    --csv ~/COSC_498/miniMXE/results_test/calibration/sunnycove_spec10_l3_sram14_roi1000_warm200_SRAMONLY/spec/oracle_points_plus.csv \
+    --extra-csv <N1_RUN_DIR>/runs/oracle_points.csv \
+    --sniper-home ~/src/sniper \
+    --uarch sunnycove --calib-ncores 8 \
+    --out plm_sunnycove_cal.sh
+```
+
+`mcpat_plm_fit.py` outputs per-frequency R², MAE, and condition number, and writes
+`plm_sunnycove_cal.sh` with PLM_N/PLM_F/PLM_B/PLM_AUTIL/PLM_AIPC arrays.
+
+#### Step 3 — Portability validation (n=4)
+
+```bash
+# Generate 12 validation jobs (6 benches × 2 freqs, n=4)
+bash plm_calibrate_sweep.sh --mode validate
+mx submit <VAL_RUN_DIR>
+mx verify  <VAL_RUN_DIR>
+
+SNIPER_HOME=~/src/sniper ROOT=<VAL_RUN_DIR>/runs \
+    bash tools/extract_oracle_points.sh
+
+python3 tools/mcpat_plm_fit.py \
+    --csv ~/COSC_498/miniMXE/results_test/calibration/sunnycove_spec10_l3_sram14_roi1000_warm200_SRAMONLY/spec/oracle_points_plus.csv \
+    --extra-csv <N1_RUN_DIR>/runs/oracle_points.csv \
+    --sniper-home ~/src/sniper \
+    --uarch sunnycove --calib-ncores 8 \
+    --validate-csv <VAL_RUN_DIR>/runs/oracle_points.csv \
+    --validate-ncores 4 \
+    --out plm_sunnycove_cal.sh
+```
+
+**Interpreting validation output:**
+
+| Condition | Diagnosis | Action |
+|-----------|-----------|--------|
+| bias < 1 W, corr(resid, U_sum) < 0.5, corr(resid, U_sum×ipc) < 0.5 | PASS — model portable | Use fitted coefficients as-is |
+| nonzero bias, low correlation | Intercept offset only | Apply scalar b_f correction |
+| corr(resid, U_sum) ≥ 0.5 | a_util slope error | Run separate n=4 calibration |
+| corr(resid, U_sum×ipc) ≥ 0.5 | a_ipc slope error | Run separate n=4 calibration |
+
+### Sniper changes
+
+Two files modified in `common/system/`:
+- `leakage_conversion.h` — added `FreqModelEntry` struct (`f_ghz`, `intercept`, `a_util`, `a_ipc`),
+  `m_plm_enabled`, `m_plm_verbose`, `m_freq_models`, `m_last_global_ins` members,
+  plus `selectModel()` / `evaluatePLM()` private helpers
+- `leakage_conversion.cc` — reads `lc/piecewise/*` knobs; in `onPeriodicIns` computes
+  `ipc_interval` and `U_sum = avg_util × N_cores`; PLM branch does exact-then-nearest
+  frequency lookup; verbose per-interval log; DVFS-change log extended with `P_nocache`,
+  `f_lookup`, match type, `u_sum`, `ipc`, `u_sum_x_ipc`
+
+New Sniper config knobs (all optional, default off):
+```
+lc/piecewise/enabled      = false    # set true to activate PLM
+lc/piecewise/verbose      = false    # if true, log every control interval
+lc/piecewise/n_models     = N        # number of frequency table entries
+
+# For each i in [0, N-1]:
+lc/piecewise/i/f_ghz      = <f>      # DVFS frequency this entry applies to (GHz)
+lc/piecewise/i/b          = <b>      # intercept b_f (W)
+lc/piecewise/i/a_util     = <au>     # U_sum coefficient (W / core-unit)
+lc/piecewise/i/a_ipc      = <ai>     # U_sum×ipc coefficient (W / (core-unit × IPC))
+```
+
+Existing behavior is 100% unchanged when `lc/piecewise/enabled` is absent or false.
+
+Extensibility: to add a new predictor (e.g. MPKI), add `a_mpki` to `FreqModelEntry`,
+measure it in `onPeriodicIns`, add the term in `evaluatePLM()`, and add the config key.
+
+### mx2 changes
+
+- `runner/dispatch.sh` — routes `CAMPAIGN=vf_sensitivity` to `run_vf_sensitivity.sh`;
+  routes `CAMPAIGN=plm_calib` to `run_plm_calib.sh`
+- `engine/run_vf_sensitivity.sh` — runner (based on `run_traces.sh`); appends `lc/piecewise/*`
+  flags to `VAR_FLAGS` after standard variant flags; embeds 7-point placeholder table;
+  supports `PLM_CFG_SH` env var override for calibrated coefficient files
+- `engine/run_plm_calib.sh` — fixed-frequency calibration/validation runner; single bench,
+  fixed `BASE_FREQ_GHZ`, configurable `SIM_N`, SRAM-only, LC disabled; writes `run.yaml`
+  and `cmd.info` compatible with `extract_oracle_points.sh`
+- `vf_sensitivity_study.sh` — standalone sweep script; generates run directory directly;
+  passes `PLM_CFG_SH` through to jobs if set
+- `plm_calibrate_sweep.sh` — sunnycove calibration and validation sweep; `--mode calib`
+  generates 18 n=1 calibration jobs (6 benches × 3 freqs); `--mode validate` generates
+  12 n=4 portability validation jobs (6 benches × 2 freqs); prints full next-step workflow
+- `tools/mcpat_plm_fit.py` — PLM fitting and validation tool:
+  - Fits per-frequency OLS with predictors `[1, U_sum, U_sum×ipc]`
+  - Runs McPAT automatically if `mcpat_table.txt` is missing
+  - `--validate-csv` mode: reports per-frequency bias, MAE, MAPE; residual decomposition
+    via Pearson correlation with U_sum and U_sum×ipc; PASS/WARN verdict with diagnostics
+  - Writes `plm_<uarch>_cal.sh` coefficient file for use with `run_vf_sensitivity.sh`
+
+### Running the study
+
+```bash
+# 1. Fit PLM coefficients (see Calibration → Step 1 above)
+python3 mx2/tools/mcpat_plm_fit.py --csv <calib.csv> ... --out plm_sunnycove_cal.sh
+
+# 2. Plan vf_sensitivity jobs
+PLM_CFG_SH=~/COSC_498/miniMXE/mx2/plm_sunnycove_cal.sh \
+  bash ~/COSC_498/miniMXE/mx2/vf_sensitivity_study.sh
+
+# 3. Submit
+~/COSC_498/miniMXE/mx2/bin/mx submit \
+  ~/COSC_498/miniMXE/results_test/vf_sensitivity/vf_sensitivity
+
+# 4. Check status
+~/COSC_498/miniMXE/mx2/bin/mx verify \
+  ~/COSC_498/miniMXE/results_test/vf_sensitivity/vf_sensitivity
+```
+
+### Study scope
+
+- Uarch: sunnycove, LLC: 32MB, Cores: n=4
+- 5 representative n=4 workload mixes
+- 6 variants: `baseline_sram_only` (sram7 + sram14), `baseline_mram_only` (mram14),
+  `lc_*`, `naive_lc_*`, `sram_lc_*` (all mram14 for LC variants)
+- Total: 30 jobs
+- Results land in: `results_test/vf_sensitivity/vf_sensitivity/`
+
+### Interpreting results
+
+The `run.yaml` for each vf_sensitivity run includes:
+```yaml
+power_model: piecewise_linear
+plm_n_models: 7
+plm_verbose: false
+plm_cfg_sh: <builtin defaults or path to cal file>
+```
+
+The Sniper log (`sniper.log`) will show at init:
+```
+[LC] Initialized: ... power_model=piecewise_linear n_models=7
+[LC] PLM[0]: f=1.60 GHz  b=20.0800  a_util=3.9200  a_ipc=0.0000
+...
+[LC] PLM[6]: f=4.00 GHz  b=20.0800  a_util=9.8000  a_ipc=0.0000
+```
+
+And at each DVFS transition:
+```
+[LC] DVFS Change [PLM]: P_est=X (llc_leak=Y P_nocache=Z) Target=T
+     f_lookup=F(exact) u_sum=U ipc=I u_sum_x_ipc=V boosted=k/N f[min/avg/max]=[...]
+```
+
+And (if `lc/piecewise/verbose=true`) at every control interval:
+```
+[LC-PLM] f_lookup=F match=exact u_sum=U ipc=I u_sum_x_ipc=V P_nocache=Z P_llc_leak=Y P_est=X
+```
+
+---
+
 ## Submitting with different SLURM resources
 
 `array_runner.sbatch` has defaults, but you can override at submit time:

@@ -69,6 +69,7 @@ HCA_FILL_TO=""
 HCA_MIG_ENABLED="false"
 HCA_PROMOTE=""
 HCA_COOLDOWN=""
+HCA_RESTRICT_FILL_WAYS="true"  # false for noparity_* variants
 
 hca_parse_variant() {
   local v="$1"
@@ -92,6 +93,7 @@ hca_parse_variant() {
   fi
   if [[ "$v" =~ ^grid_s([0-9]+)_fill(sram|mram)$ ]]; then
     HCA_SRAM_WAYS="${BASH_REMATCH[1]}"; HCA_FILL_TO="${BASH_REMATCH[2]}"; HCA_MIG_ENABLED="false"
+    HCA_RESTRICT_FILL_WAYS="true"
     return
   fi
   if [[ "$v" =~ ^mig_s([0-9]+)_fill(sram|mram)_p([0-9]+)_c([0-9]+)$ ]]; then
@@ -100,6 +102,25 @@ hca_parse_variant() {
     HCA_MIG_ENABLED="true"
     HCA_PROMOTE="${BASH_REMATCH[3]}"
     HCA_COOLDOWN="${BASH_REMATCH[4]}"
+    HCA_RESTRICT_FILL_WAYS="true"
+    return
+  fi
+  # Canonical/standard HCA: unrestricted way fills (full associativity).
+  # Lines are tagged SRAM/MRAM by their physical way index after insertion.
+  # set-parity line_map is disabled; uses global fill_to as the preferred
+  # target but LRU may choose any way if the preferred ways are occupied.
+  if [[ "$v" =~ ^noparity_s([0-9]+)_fill(sram|mram)$ ]]; then
+    HCA_SRAM_WAYS="${BASH_REMATCH[1]}"; HCA_FILL_TO="${BASH_REMATCH[2]}"; HCA_MIG_ENABLED="false"
+    HCA_RESTRICT_FILL_WAYS="false"
+    return
+  fi
+  if [[ "$v" =~ ^noparity_s([0-9]+)_fill(sram|mram)_p([0-9]+)_c([0-9]+)$ ]]; then
+    HCA_SRAM_WAYS="${BASH_REMATCH[1]}"
+    HCA_FILL_TO="${BASH_REMATCH[2]}"
+    HCA_MIG_ENABLED="true"
+    HCA_PROMOTE="${BASH_REMATCH[3]}"
+    HCA_COOLDOWN="${BASH_REMATCH[4]}"
+    HCA_RESTRICT_FILL_WAYS="false"
     return
   fi
 
@@ -122,7 +143,13 @@ $(hca_tech_common_flags)
 -g perf_model/l3_cache/hybrid/sram_ways=${sw}
 -g perf_model/l3_cache/hybrid/fill_to=${HCA_FILL_TO}
 -g perf_model/l3_cache/hybrid/migration/enabled=${HCA_MIG_ENABLED}
+-g perf_model/l3_cache/hybrid/restrict_fill_ways=${HCA_RESTRICT_FILL_WAYS}
 EOF
+
+  # noparity variants: override line_map to none (no set-parity split)
+  if [[ "$HCA_RESTRICT_FILL_WAYS" == "false" ]]; then
+    echo "-g perf_model/l3_cache/hybrid/line_map/mode=none"
+  fi
 
   if [[ "$HCA_MIG_ENABLED" == "true" ]]; then
     cat <<EOF

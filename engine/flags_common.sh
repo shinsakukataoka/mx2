@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set_nvsim_params() {
   : "${TECH:?TECH must be set (mram14|mram32|sram7)}"
-  : "${L3_MB:?L3_MB must be set (2|32|128)}"
+  : "${L3_MB:?L3_MB must be set (2|16|32|128)}"
 
   # WB_PJ stays in shell (not in YAML)
   WB_PJ="${WB_PJ:-0}"
@@ -106,6 +106,25 @@ $(tech_common_flags)
 -g lc/enabled=false
 EOF
       ;;
+    static_lift_f*)
+      # Static frequency lift: MRAM cache at boosted freq, no DVFS
+      local _fstr="${var#static_lift_f}"
+      local _freq="${_fstr//p/.}"
+      cat <<EOF
+-g perf_model/core/frequency=${_freq}
+-g dvfs/type=simple
+-g dvfs/transition_latency=2000
+-g dvfs/simple/cores_per_socket=${SIM_N}
+-g core/hook_periodic_ins/ins_global=${BASE_PERIODIC_INS}
+-g core/hook_periodic_ins/ins_per_core=0
+$(tech_common_flags)
+-g perf_model/l3_cache/hybrid/sram_ways=0
+-g perf_model/l3_cache/hybrid/fill_to=mram
+-g perf_model/l3_cache/hybrid/migration/enabled=false
+-g perf_model/l3_cache/llc/leak_power_mW=${MRAM_LEAK_MW}
+-g lc/enabled=false
+EOF
+      ;;
     *)
       if [[ "$LC_ENABLED" != "true" ]]; then
         echo "[ERR] Unknown variant: $var" >&2
@@ -142,13 +161,33 @@ $(tech_common_flags)
 -g lc/hysteresis_w=${HYS_W}
 -g lc/static_w=${STATIC_W}
 -g lc/dyn_w_per_ghz=${DYN_W}
--g lc/llc_leak_w=${mram_leak_w}
+-g lc/llc_leak_w=${LLC_LEAK_OVERRIDE:-${mram_leak_w}}
 -g lc/freq/min_ghz=${LC_FMIN_GHZ:-${BASE_FREQ_GHZ}}
 -g lc/freq/max_ghz=${FMAX_GHZ}
 -g lc/freq/step_ghz=${STEP_GHZ}
 -g lc/selective/enabled=${sel_enabled}
 -g lc/selective/k=${sel_k}
 EOF
+
+      # If PLM_CFG_SH is set, add piecewise-linear model flags
+      if [[ -n "${PLM_CFG_SH:-}" && -f "${PLM_CFG_SH}" ]]; then
+        # Source the PLM config (defines PLM_F, PLM_B, PLM_AUTIL, PLM_AIPC arrays)
+        # shellcheck disable=SC1090
+        source "${PLM_CFG_SH}"
+        local _plm_n=${#PLM_F[@]}
+        echo "-g lc/piecewise/enabled=true"
+        echo "-g lc/piecewise/verbose=0"
+        echo "-g lc/piecewise/n_models=${_plm_n}"
+        for (( _i=0; _i<_plm_n; _i++ )); do
+          echo "-g lc/piecewise/${_i}/f_ghz=${PLM_F[$_i]}"
+          echo "-g lc/piecewise/${_i}/b=${PLM_B[$_i]}"
+          echo "-g lc/piecewise/${_i}/a_util=${PLM_AUTIL[$_i]}"
+          echo "-g lc/piecewise/${_i}/a_ipc=${PLM_AIPC[$_i]}"
+        done
+        unset _i
+      else
+        echo "-g lc/piecewise/enabled=false"
+      fi
       ;;
   esac
 }

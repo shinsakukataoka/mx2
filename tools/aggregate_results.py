@@ -136,8 +136,11 @@ def load_yaml_props(run_dir: str) -> Dict:
 LC_INIT_RE = re.compile(r"\[LC\]\s+Initialized:\s+cap=([0-9.]+)W\s+target=([0-9.]+)W.*?base_f=([0-9.]+)GHz", re.IGNORECASE)
 
 LC_DVFS_RE = re.compile(
-    r"\[LC\]\s+DVFS Change:\s+P_est=([0-9.]+)W\s+Target=([0-9.]+)W.*?"
-    r"sum_util=([0-9.]+).*?boosted=([0-9]+)/([0-9]+).*?"
+    r"\[LC\]\s+DVFS Change(?:\s+\[[^\]]+\])?:\s+"
+    r"P_est=([0-9.]+)W.*?"
+    r"Target=([0-9.]+)W.*?"
+    r"(?:u_sum|sum_util)=([0-9.]+).*?"
+    r"boosted=([0-9]+)/([0-9]+).*?"
     r"f\[min/avg/max\]=\[[0-9.]+/([0-9.]+)/[0-9.]+\]\s+GHz",
     re.IGNORECASE
 )
@@ -183,7 +186,7 @@ def parse_lc_from_sniper_log(log_path: str, run_yaml=None) -> dict:
 
     with open(log_path, "r", errors="ignore") as f:
         for line in f:
-            if (not roi_started) and (("[SNIPER] Setting instrumentation mode to DETAILED" in line) or ("[SNIPER] Using DETAILED mode for detailed" in line)):
+            if (not roi_started) and ("[SNIPER] Setting instrumentation mode to DETAILED" in line):
                 roi_started = True
                 if init_f is not None: roi_freq_samples.append(float(init_f))
                 continue
