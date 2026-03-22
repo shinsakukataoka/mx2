@@ -5,6 +5,13 @@
   w_pj: 214
   leak_mw: 61.793
 
+4:
+  rd_cyc: 5
+  wr_cyc: 4
+  r_pj: 265
+  w_pj: 243
+  leak_mw: 62.5
+
 16:
   rd_cyc: 16
   wr_cyc: 9

@@ -123,6 +123,22 @@ hca_parse_variant() {
     HCA_RESTRICT_FILL_WAYS="false"
     return
   fi
+  # Canonical HCA with restricted fills: no set-parity, but fills steered to
+  # target tech ways.  Migration is the only path to populate SRAM ways.
+  if [[ "$v" =~ ^noparity_s([0-9]+)_fill(sram|mram)_rf$ ]]; then
+    HCA_SRAM_WAYS="${BASH_REMATCH[1]}"; HCA_FILL_TO="${BASH_REMATCH[2]}"; HCA_MIG_ENABLED="false"
+    HCA_RESTRICT_FILL_WAYS="true"
+    return
+  fi
+  if [[ "$v" =~ ^noparity_s([0-9]+)_fill(sram|mram)_rf_p([0-9]+)_c([0-9]+)$ ]]; then
+    HCA_SRAM_WAYS="${BASH_REMATCH[1]}"
+    HCA_FILL_TO="${BASH_REMATCH[2]}"
+    HCA_MIG_ENABLED="true"
+    HCA_PROMOTE="${BASH_REMATCH[3]}"
+    HCA_COOLDOWN="${BASH_REMATCH[4]}"
+    HCA_RESTRICT_FILL_WAYS="true"
+    return
+  fi
 
   echo "[ERR] Unknown HCA variant: $v" >&2
   exit 10
@@ -147,7 +163,7 @@ $(hca_tech_common_flags)
 EOF
 
   # noparity variants: override line_map to none (no set-parity split)
-  if [[ "$HCA_RESTRICT_FILL_WAYS" == "false" ]]; then
+  if [[ "$v" == noparity_* ]]; then
     echo "-g perf_model/l3_cache/hybrid/line_map/mode=none"
   fi
 

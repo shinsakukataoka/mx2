@@ -231,6 +231,356 @@ for MULT in 2 3 4 5; do
 done
 
 # ===============================================================
+# STUDY 6: Restrict Fill Ways Sweep
+# ===============================================================
+# Test migration effectiveness when fills are steered to MRAM ways
+# (restrict_fill_ways=true), making SRAM only reachable via promotion.
+# Uses noparity (line_map/mode=none) + restrict_fill_ways=true (suffix _rf).
+echo ""
+echo "=============================================="
+echo " Study 6a: Restrict Fill – Top4 × 16MB × Static+Mig(p4c32)"
+echo "=============================================="
+
+TOP4_BENCHES="500.perlbench_r,505.mcf_r,520.omnetpp_r,531.deepsjeng_r"
+
+# 6a: top 4 workloads, 16MB, static s4/s8/s12 + migration s4/s8/s12 p4_c32
+VARS_6A="\
+noparity_s4_fillmram_rf,\
+noparity_s8_fillmram_rf,\
+noparity_s12_fillmram_rf,\
+noparity_s4_fillmram_rf_p4_c32,\
+noparity_s8_fillmram_rf_p4_c32,\
+noparity_s12_fillmram_rf_p4_c32"
+
+"$MX" plan-hca \
+  --out "$OUT_BASE" \
+  --run-id "${STUDY_ROOT}/6_restrict_fill_sweep/6a_top4_static_mig" \
+  --uarch "$UARCH" \
+  --sram-tech sram14 \
+  --mram-tech mram14 \
+  --tech-tag sram14_mram14 \
+  --benches "$TOP4_BENCHES" \
+  --l3 "16" \
+  --cores "$CORES" \
+  --roi-m "$ROI_M" \
+  --warmup-m "$WARMUP_M" \
+  --base-freq-ghz "$BASE_FREQ_GHZ" \
+  --variants "$VARS_6A"
+
+local_dir_6a="$OUT_BASE/hca/${STUDY_ROOT}/6_restrict_fill_sweep/6a_top4_static_mig"
+"$MX" validate "$local_dir_6a"
+n=$(wc -l < "$local_dir_6a/jobs.txt")
+TOTAL_JOBS=$(( TOTAL_JOBS + n ))
+echo "[OK] 6a -> $n jobs"
+
+echo ""
+echo "=============================================="
+echo " Study 6b: Restrict Fill – Top4 × 16MB × s4 promote/cooldown sweep"
+echo "=============================================="
+
+# 6b: top 4 workloads, 16MB, s4 with {p:2,4,8} × {c:8,32}
+VARS_6B=""
+for p in 2 4 8; do
+  for c in 8 32; do
+    [[ -n "$VARS_6B" ]] && VARS_6B+=","
+    VARS_6B+="noparity_s4_fillmram_rf_p${p}_c${c}"
+  done
+done
+
+"$MX" plan-hca \
+  --out "$OUT_BASE" \
+  --run-id "${STUDY_ROOT}/6_restrict_fill_sweep/6b_top4_s4_sweep" \
+  --uarch "$UARCH" \
+  --sram-tech sram14 \
+  --mram-tech mram14 \
+  --tech-tag sram14_mram14 \
+  --benches "$TOP4_BENCHES" \
+  --l3 "16" \
+  --cores "$CORES" \
+  --roi-m "$ROI_M" \
+  --warmup-m "$WARMUP_M" \
+  --base-freq-ghz "$BASE_FREQ_GHZ" \
+  --variants "$VARS_6B"
+
+local_dir_6b="$OUT_BASE/hca/${STUDY_ROOT}/6_restrict_fill_sweep/6b_top4_s4_sweep"
+"$MX" validate "$local_dir_6b"
+n=$(wc -l < "$local_dir_6b/jobs.txt")
+TOTAL_JOBS=$(( TOTAL_JOBS + n ))
+echo "[OK] 6b -> $n jobs"
+
+echo ""
+echo "=============================================="
+echo " Study 6c: Restrict Fill – Remaining WLs + all WLs at 32/128MB"
+echo "=============================================="
+
+# Remaining 6 workloads at 16MB
+OTHER_BENCHES="502.gcc_r,523.xalancbmk_r,541.leela_r,557.xz_r,648.exchange2_s,649.fotonik3d_s"
+
+# Combined variant set A+B (deduplicated; s4p4c32 is in both A and B)
+VARS_6C_ALL="\
+noparity_s4_fillmram_rf,\
+noparity_s8_fillmram_rf,\
+noparity_s12_fillmram_rf,\
+noparity_s4_fillmram_rf_p2_c8,\
+noparity_s4_fillmram_rf_p2_c32,\
+noparity_s4_fillmram_rf_p4_c8,\
+noparity_s4_fillmram_rf_p4_c32,\
+noparity_s4_fillmram_rf_p8_c8,\
+noparity_s4_fillmram_rf_p8_c32,\
+noparity_s8_fillmram_rf_p4_c32,\
+noparity_s12_fillmram_rf_p4_c32"
+
+# 6c-1: remaining 6 workloads at 16MB with full variant set
+"$MX" plan-hca \
+  --out "$OUT_BASE" \
+  --run-id "${STUDY_ROOT}/6_restrict_fill_sweep/6c_other_16M" \
+  --uarch "$UARCH" \
+  --sram-tech sram14 \
+  --mram-tech mram14 \
+  --tech-tag sram14_mram14 \
+  --benches "$OTHER_BENCHES" \
+  --l3 "16" \
+  --cores "$CORES" \
+  --roi-m "$ROI_M" \
+  --warmup-m "$WARMUP_M" \
+  --base-freq-ghz "$BASE_FREQ_GHZ" \
+  --variants "$VARS_6C_ALL"
+
+local_dir_6c1="$OUT_BASE/hca/${STUDY_ROOT}/6_restrict_fill_sweep/6c_other_16M"
+"$MX" validate "$local_dir_6c1"
+n=$(wc -l < "$local_dir_6c1/jobs.txt")
+TOTAL_JOBS=$(( TOTAL_JOBS + n ))
+echo "[OK] 6c-other-16M -> $n jobs"
+
+# 6c-2: all 10 workloads at 32+128MB with full variant set
+"$MX" plan-hca \
+  --out "$OUT_BASE" \
+  --run-id "${STUDY_ROOT}/6_restrict_fill_sweep/6c_all_32_128M" \
+  --uarch "$UARCH" \
+  --sram-tech sram14 \
+  --mram-tech mram14 \
+  --tech-tag sram14_mram14 \
+  --benches "$BENCHES" \
+  --l3 "32,128" \
+  --cores "$CORES" \
+  --roi-m "$ROI_M" \
+  --warmup-m "$WARMUP_M" \
+  --base-freq-ghz "$BASE_FREQ_GHZ" \
+  --variants "$VARS_6C_ALL"
+
+local_dir_6c2="$OUT_BASE/hca/${STUDY_ROOT}/6_restrict_fill_sweep/6c_all_32_128M"
+"$MX" validate "$local_dir_6c2"
+n=$(wc -l < "$local_dir_6c2/jobs.txt")
+TOTAL_JOBS=$(( TOTAL_JOBS + n ))
+echo "[OK] 6c-all-32/128M -> $n jobs"
+
+# ===============================================================
+# STUDY 7: Aggressive Migration Ceiling (policy upper bound)
+# ===============================================================
+# Most aggressive possible migration: promote on FIRST write (p1),
+# no cooldown (c0). Bounds the upside of ANY migration policy.
+# Tests both unrestricted and restricted fills.
+echo ""
+echo "=============================================="
+echo " Study 7: Aggressive Migration Ceiling (p1_c0)"
+echo "=============================================="
+
+TOP4_BENCHES="500.perlbench_r,505.mcf_r,520.omnetpp_r,531.deepsjeng_r"
+
+# Unrestricted (LRU picks any way) + restricted (fills to MRAM only)
+# s4 and s8 for both
+VARS_7="\
+noparity_s4_fillmram_p1_c0,\
+noparity_s8_fillmram_p1_c0,\
+noparity_s4_fillmram_rf_p1_c0,\
+noparity_s8_fillmram_rf_p1_c0"
+
+"$MX" plan-hca \
+  --out "$OUT_BASE" \
+  --run-id "${STUDY_ROOT}/7_aggressive_migration_ceiling" \
+  --uarch "$UARCH" \
+  --sram-tech sram14 \
+  --mram-tech mram14 \
+  --tech-tag sram14_mram14 \
+  --benches "$TOP4_BENCHES" \
+  --l3 "16" \
+  --cores "$CORES" \
+  --roi-m "$ROI_M" \
+  --warmup-m "$WARMUP_M" \
+  --base-freq-ghz "$BASE_FREQ_GHZ" \
+  --variants "$VARS_7"
+
+local_dir_7="$OUT_BASE/hca/${STUDY_ROOT}/7_aggressive_migration_ceiling"
+"$MX" validate "$local_dir_7"
+n=$(wc -l < "$local_dir_7/jobs.txt")
+TOTAL_JOBS=$(( TOTAL_JOBS + n ))
+echo "[OK] 7_aggressive_migration_ceiling -> $n jobs"
+
+# ===============================================================
+# STUDY 8: Prior Paper Comparison (RWHCA 45nm, APM 22nm)
+# ===============================================================
+# Reproduce device models from prior HCA papers where SRAM is faster
+# for BOTH reads and writes. If migration shows benefit here but not
+# with our 14nm model, the device model is the determining factor.
+# Uses their stated cache sizes (~4MB) and latencies converted to 2.2GHz.
+echo ""
+echo "=============================================="
+echo " Study 8a: RWHCA (45nm) – SRAM faster for R+W"
+echo "=============================================="
+
+TOP4_BENCHES="500.perlbench_r,505.mcf_r,520.omnetpp_r,531.deepsjeng_r"
+
+# RWHCA: ~6% SRAM fraction → s1 (1/16 = 6.25%)
+# Variants: all-MRAM baseline, static s1, migration s1 p1_c0 + p4_c32
+# Both unrestricted and restricted fills
+VARS_8A="\
+baseline_mram_only,\
+noparity_s1_fillmram,\
+noparity_s1_fillmram_p1_c0,\
+noparity_s1_fillmram_p4_c32,\
+noparity_s1_fillmram_rf,\
+noparity_s1_fillmram_rf_p1_c0"
+
+"$MX" plan-hca \
+  --out "$OUT_BASE" \
+  --run-id "${STUDY_ROOT}/8_prior_paper_comparison/8a_rwhca_45nm" \
+  --uarch "$UARCH" \
+  --sram-tech sram_rwhca45 \
+  --mram-tech mram_rwhca45 \
+  --tech-tag rwhca45 \
+  --benches "$TOP4_BENCHES" \
+  --l3 "4" \
+  --cores "$CORES" \
+  --roi-m "$ROI_M" \
+  --warmup-m "$WARMUP_M" \
+  --base-freq-ghz "$BASE_FREQ_GHZ" \
+  --variants "$VARS_8A"
+
+local_dir_8a="$OUT_BASE/hca/${STUDY_ROOT}/8_prior_paper_comparison/8a_rwhca_45nm"
+"$MX" validate "$local_dir_8a"
+n=$(wc -l < "$local_dir_8a/jobs.txt")
+TOTAL_JOBS=$(( TOTAL_JOBS + n ))
+echo "[OK] 8a_rwhca_45nm -> $n jobs"
+
+echo ""
+echo "=============================================="
+echo " Study 8b: APM (22nm) – SRAM faster for R+W"
+echo "=============================================="
+
+# APM: ~11% SRAM fraction → s2 (2/16 = 12.5%)
+VARS_8B="\
+baseline_mram_only,\
+noparity_s2_fillmram,\
+noparity_s2_fillmram_p1_c0,\
+noparity_s2_fillmram_p4_c32,\
+noparity_s2_fillmram_rf,\
+noparity_s2_fillmram_rf_p1_c0"
+
+"$MX" plan-hca \
+  --out "$OUT_BASE" \
+  --run-id "${STUDY_ROOT}/8_prior_paper_comparison/8b_apm_22nm" \
+  --uarch "$UARCH" \
+  --sram-tech sram_apm22 \
+  --mram-tech mram_apm22 \
+  --tech-tag apm22 \
+  --benches "$TOP4_BENCHES" \
+  --l3 "4" \
+  --cores "$CORES" \
+  --roi-m "$ROI_M" \
+  --warmup-m "$WARMUP_M" \
+  --base-freq-ghz "$BASE_FREQ_GHZ" \
+  --variants "$VARS_8B"
+
+local_dir_8b="$OUT_BASE/hca/${STUDY_ROOT}/8_prior_paper_comparison/8b_apm_22nm"
+"$MX" validate "$local_dir_8b"
+n=$(wc -l < "$local_dir_8b/jobs.txt")
+TOTAL_JOBS=$(( TOTAL_JOBS + n ))
+echo "[OK] 8b_apm_22nm -> $n jobs"
+
+echo ""
+echo "=============================================="
+echo " Study 8c: Ours (14nm) at iso-4MB"
+echo "=============================================="
+
+# Our 14nm at 4MB for iso-capacity comparison
+# SRAM rd=5 > MRAM rd=3 → inverted read relationship
+VARS_8C="\
+baseline_mram_only,\
+noparity_s2_fillmram,\
+noparity_s2_fillmram_p1_c0,\
+noparity_s2_fillmram_p4_c32,\
+noparity_s2_fillmram_rf,\
+noparity_s2_fillmram_rf_p1_c0"
+
+"$MX" plan-hca \
+  --out "$OUT_BASE" \
+  --run-id "${STUDY_ROOT}/8_prior_paper_comparison/8c_ours_14nm" \
+  --uarch "$UARCH" \
+  --sram-tech sram14 \
+  --mram-tech mram14 \
+  --tech-tag sram14_mram14 \
+  --benches "$TOP4_BENCHES" \
+  --l3 "4" \
+  --cores "$CORES" \
+  --roi-m "$ROI_M" \
+  --warmup-m "$WARMUP_M" \
+  --base-freq-ghz "$BASE_FREQ_GHZ" \
+  --variants "$VARS_8C"
+
+local_dir_8c="$OUT_BASE/hca/${STUDY_ROOT}/8_prior_paper_comparison/8c_ours_14nm"
+"$MX" validate "$local_dir_8c"
+n=$(wc -l < "$local_dir_8c/jobs.txt")
+TOTAL_JOBS=$(( TOTAL_JOBS + n ))
+echo "[OK] 8c_ours_14nm -> $n jobs"
+
+# ===============================================================
+# STUDY 9: Read-Only MRAM Latency Scaling (crossover study)
+# ===============================================================
+# Scales MRAM read latency only (2x-5x), keeping write at 1x.
+# At 16MB: SRAM rd=16. MRAM rd: 1x=6, 2x=12, 3x=18, 4x=24, 5x=30
+# Crossover at 3x: SRAM reads become faster than MRAM reads.
+# Tests whether migration becomes effective when SRAM is faster for both R+W.
+echo ""
+echo "=============================================="
+echo " Study 9: Read-Only MRAM Latency Scaling"
+echo "=============================================="
+
+TOP4_BENCHES="500.perlbench_r,505.mcf_r,520.omnetpp_r,531.deepsjeng_r"
+
+VARS_9="\
+baseline_mram_only,\
+noparity_s4_fillmram,\
+noparity_s4_fillmram_p1_c0,\
+noparity_s4_fillmram_rf,\
+noparity_s4_fillmram_rf_p1_c0"
+
+for MULT in 2 3 4 5; do
+  MRAM_TECH="mram14_r${MULT}x_w1x"
+  [[ -f "$DEV_DIR/${MRAM_TECH}.yaml" ]] || { echo "[ERR] missing device file: $DEV_DIR/${MRAM_TECH}.yaml"; exit 1; }
+
+  "$MX" plan-hca \
+    --out "$OUT_BASE" \
+    --run-id "${STUDY_ROOT}/9_read_only_scaling/rd_${MULT}x" \
+    --uarch "$UARCH" \
+    --sram-tech sram14 \
+    --mram-tech "$MRAM_TECH" \
+    --tech-tag "sram14_${MRAM_TECH}" \
+    --benches "$TOP4_BENCHES" \
+    --l3 "16,32,128" \
+    --cores "$CORES" \
+    --roi-m "$ROI_M" \
+    --warmup-m "$WARMUP_M" \
+    --base-freq-ghz "$BASE_FREQ_GHZ" \
+    --variants "$VARS_9"
+
+  local_dir_9="$OUT_BASE/hca/${STUDY_ROOT}/9_read_only_scaling/rd_${MULT}x"
+  "$MX" validate "$local_dir_9"
+  n=$(wc -l < "$local_dir_9/jobs.txt")
+  TOTAL_JOBS=$(( TOTAL_JOBS + n ))
+  echo "[OK] 9_read_only_scaling/rd_${MULT}x -> $n jobs"
+done
+
+# ===============================================================
 # Summary
 # ===============================================================
 echo ""

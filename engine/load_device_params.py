@@ -112,7 +112,7 @@ def emit(prefix: str, blob: Dict[str, Any]) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Emit SRAM_* and MRAM_* device params as shell assignments.")
-    ap.add_argument("--l3", required=True, type=int, choices=[2, 16, 32, 128])
+    ap.add_argument("--l3", required=True, type=int, choices=[2, 4, 16, 32, 128])
     ap.add_argument("--devices-dir", default="", help="Override devices dir (default: mx2/config/devices)")
 
     # Non-HCA (single TECH)

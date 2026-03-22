@@ -323,7 +323,7 @@ LC_LABEL_RE = re.compile(r"^(naive_|sram_)?lc_c[0-9p]+_s[0-9p]+_d[0-9p]+_tf[0-9p
 HCA_LABEL_RE = re.compile(
     r"^(baseline_sram_only|baseline_mram_only|baseline_\d+_sram|"
     r"grid_s\d+_fill(?:sram|mram)|mig_s\d+_fill(?:sram|mram)_p\d+_c\d+|"
-    r"noparity_s\d+_fill(?:sram|mram)|noparity_s\d+_fill(?:sram|mram)_p\d+_c\d+)$"
+    r"noparity_s\d+_fill(?:sram|mram)(?:_rf)?|noparity_s\d+_fill(?:sram|mram)(?:_rf)?_p\d+_c\d+)$"
 )
 
 def build_variants(variant_set: str, base_label: str, include_baselines: bool = True) -> List[str]:
